@@ -86,7 +86,7 @@ class AICoinMessageType(Enum):
 def _import_blockchain():
     """延迟导入区块链模块"""
     try:
-        from ..blockchain import BlockchainManager
+        from .blockchain import BlockchainManager
         return BlockchainManager
     except ImportError:
         logger.warning("blockchain 模块未找到, 使用模拟实现")
@@ -97,7 +97,7 @@ def _import_blockchain():
 def _import_mining_engine():
     """延迟导入挖矿引擎模块"""
     try:
-        from ..mining_engine import MiningEngine
+        from .mining_engine import MiningEngine
         return MiningEngine
     except ImportError:
         logger.warning("mining_engine 模块未找到, 使用模拟实现")
@@ -108,7 +108,7 @@ def _import_mining_engine():
 def _import_governance():
     """延迟导入治理模块"""
     try:
-        from ..governance import GovernanceManager
+        from .governance import GovernanceManager
         return GovernanceManager
     except ImportError:
         logger.warning("governance 模块未找到, 使用模拟实现")
@@ -119,7 +119,7 @@ def _import_governance():
 def _import_router():
     """延迟导入路由模块"""
     try:
-        from ..router import OptimalRouter
+        from .router import OptimalRouter
         return OptimalRouter
     except ImportError:
         logger.warning("router 模块未找到, 使用模拟实现")
@@ -130,7 +130,7 @@ def _import_router():
 def _import_api_gateway():
     """延迟导入 API 网关模块"""
     try:
-        from ..api_gateway import APIGateway
+        from .api_gateway import APIGateway
         return APIGateway
     except ImportError:
         logger.warning("api_gateway 模块未找到, 使用模拟实现")
@@ -141,7 +141,7 @@ def _import_api_gateway():
 def _import_compute_meter():
     """延迟导入算力计量模块"""
     try:
-        from ..mining_engine import ComputeMeter
+        from .mining_engine import ComputeMeter
         return ComputeMeter
     except ImportError:
         logger.warning("compute_meter 模块未找到, 使用模拟实现")
@@ -152,7 +152,7 @@ def _import_compute_meter():
 def _import_reward_distributor():
     """延迟导入收益分配模块"""
     try:
-        from ..rewards import RewardDistributor
+        from .mining_engine import RewardDistributor
         return RewardDistributor
     except ImportError:
         logger.warning("reward_distributor 模块未找到, 使用模拟实现")

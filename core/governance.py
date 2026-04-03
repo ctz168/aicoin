@@ -57,6 +57,8 @@ GOVERNANCE_LOOP_INTERVAL: float = 60.0
 class ProposalType(enum.Enum):
     """提案类型枚举"""
     RUN_MODEL = "RUN_MODEL"          # 提议运行指定AI模型
+    ADD_MODEL = "ADD_MODEL"          # 提议注册新AI模型到网络
+    REMOVE_MODEL = "REMOVE_MODEL"    # 提议从网络移除AI模型
     PARAM_CHANGE = "PARAM_CHANGE"    # 修改网络参数
     EMERGENCY = "EMERGENCY"          # 紧急操作
     UPGRADE = "UPGRADE"              # 协议升级
@@ -82,10 +84,11 @@ class Proposal:
     Attributes:
         id: 提案唯一标识
         proposer: 提案发起者地址
-        proposal_type: 提案类型（RUN_MODEL / PARAM_CHANGE / EMERGENCY / UPGRADE）
+        proposal_type: 提案类型（RUN_MODEL / ADD_MODEL / REMOVE_MODEL / PARAM_CHANGE / EMERGENCY / UPGRADE）
         title: 提案标题
         description: 提案详细描述
-        model_name: 目标模型名称（仅RUN_MODEL类型）
+        model_name: 目标模型名称（RUN_MODEL / REMOVE_MODEL 类型）
+        model_info: 新模型注册信息（ADD_MODEL 类型）
         parameters: 参数修改字典（仅PARAM_CHANGE类型）
         status: 当前提案状态
         votes_for: 赞成票权重
@@ -104,6 +107,8 @@ class Proposal:
     description: str
     model_name: str = ""
     parameters: dict = field(default_factory=dict)
+    # ADD_MODEL 提案用：新模型的注册信息
+    model_info: dict = field(default_factory=dict)
 
     status: str = "ACTIVE"
     votes_for: int = 0
@@ -159,6 +164,7 @@ class Proposal:
             "title": self.title,
             "description": self.description,
             "model_name": self.model_name,
+            "model_info": self.model_info,
             "parameters": self.parameters,
             "status": self.status,
             "votes_for": self.votes_for,
@@ -183,17 +189,21 @@ class ProposalExecutor:
 
     当提案投票通过后，ProposalExecutor 执行具体操作：
     - RUN_MODEL: 通知所有节点切换模型
+    - ADD_MODEL: 注册新模型到网络模型注册表
+    - REMOVE_MODEL: 从网络模型注册表移除模型
     - PARAM_CHANGE: 更新网络配置参数
     - EMERGENCY: 执行紧急安全操作
     - UPGRADE: 触发协议升级流程
     """
 
-    def __init__(self, node_manager=None) -> None:
+    def __init__(self, node_manager=None, model_registry=None) -> None:
         """
         Args:
             node_manager: 节点管理器引用（可选，用于通知节点）
+            model_registry: 模型注册表引用（可选，用于 ADD_MODEL / REMOVE_MODEL）
         """
         self._node_manager = node_manager
+        self._model_registry = model_registry
         # 已注册的参数变更回调 {param_key: callback}
         self._param_callbacks: Dict[str, Callable[[Any], bool]] = {}
         # 已注册的升级回调 {upgrade_id: callback}
@@ -241,6 +251,10 @@ class ProposalExecutor:
         try:
             if proposal.proposal_type == ProposalType.RUN_MODEL.value:
                 success = self._execute_model_switch(proposal)
+            elif proposal.proposal_type == ProposalType.ADD_MODEL.value:
+                success = self._execute_add_model(proposal)
+            elif proposal.proposal_type == ProposalType.REMOVE_MODEL.value:
+                success = self._execute_remove_model(proposal)
             elif proposal.proposal_type == ProposalType.PARAM_CHANGE.value:
                 success = self._execute_param_change(proposal)
             elif proposal.proposal_type == ProposalType.EMERGENCY.value:
@@ -291,6 +305,14 @@ class ProposalExecutor:
 
         logger.info("切换活跃模型为: %s", model_name)
 
+        # 如果有模型注册表，切换活跃模型
+        if self._model_registry is not None:
+            try:
+                self._model_registry.set_active_model(model_name)
+                logger.info("模型注册表活跃模型已切换: %s", model_name)
+            except Exception as e:
+                logger.error("切换模型注册表活跃模型失败: %s", e)
+
         # 如果有节点管理器，通知所有节点
         if self._node_manager is not None:
             try:
@@ -302,6 +324,115 @@ class ProposalExecutor:
                 logger.error("通知节点切换模型失败: %s", e)
 
         return True
+
+    def _execute_add_model(self, proposal: Proposal) -> bool:
+        """执行新增模型
+
+        将提案中的新模型注册到网络模型注册表。
+        提案通过后，该模型可供 RUN_MODEL 提案选择运行。
+
+        Args:
+            proposal: ADD_MODEL 类型的提案
+                model_name: 新模型名称（HuggingFace格式，如 "deepseek/DeepSeek-V3"）
+                model_info: 模型信息字典，需包含:
+                    - min_memory_gb: 最小内存要求
+                    - min_gpu_memory_gb: 最小GPU显存要求
+                    - recommended_nodes: 推荐节点数
+                    - category: 模型类别（chat/image/code/embedding等）
+                    - description: 模型描述
+
+        Returns:
+            执行是否成功
+        """
+        model_name = proposal.model_name
+        model_info = proposal.model_info
+
+        if not model_name:
+            logger.error("提案 #%d 未指定模型名称", proposal.id)
+            return False
+
+        if not model_info:
+            logger.error("提案 #%d 未包含模型信息", proposal.id)
+            return False
+
+        logger.info("注册新模型: %s", model_name)
+
+        if self._model_registry is not None:
+            try:
+                success = self._model_registry.register_model(model_name, model_info)
+                if success:
+                    logger.info("新模型已注册到网络: %s", model_name)
+
+                    # 通知所有节点有新模型可用
+                    if self._node_manager is not None:
+                        try:
+                            self._node_manager.broadcast_model_update(
+                                action="add", model_name=model_name,
+                                model_info=model_info
+                            )
+                        except Exception as e:
+                            logger.warning("广播新模型通知失败: %s", e)
+                else:
+                    logger.error("模型注册失败: %s", model_name)
+                return success
+            except Exception as e:
+                logger.error("注册新模型时异常: %s", e)
+                return False
+        else:
+            logger.warning("模型注册表未初始化，无法注册模型")
+            return False
+
+    def _execute_remove_model(self, proposal: Proposal) -> bool:
+        """执行移除模型
+
+        从网络模型注册表中移除指定模型。
+        注意：如果该模型当前是活跃模型，将阻止移除操作。
+
+        Args:
+            proposal: REMOVE_MODEL 类型的提案
+                model_name: 要移除的模型名称
+
+        Returns:
+            执行是否成功
+        """
+        model_name = proposal.model_name
+        if not model_name:
+            logger.error("提案 #%d 未指定模型名称", proposal.id)
+            return False
+
+        logger.info("移除模型: %s", model_name)
+
+        if self._model_registry is not None:
+            try:
+                # 检查是否为活跃模型，活跃模型不可移除
+                active = self._model_registry.get_active_model()
+                if model_name == active:
+                    logger.error("无法移除当前活跃模型: %s，请先切换活跃模型", model_name)
+                    return False
+
+                # 移除模型
+                if hasattr(self._model_registry, 'remove_model'):
+                    success = self._model_registry.remove_model(model_name)
+                    if not success:
+                        logger.error("模型移除失败: %s", model_name)
+                    return success
+
+                # 通知所有节点
+                if self._node_manager is not None:
+                    try:
+                        self._node_manager.broadcast_model_update(
+                            action="remove", model_name=model_name
+                        )
+                    except Exception as e:
+                        logger.warning("广播模型移除通知失败: %s", e)
+
+                return True
+            except Exception as e:
+                logger.error("移除模型时异常: %s", e)
+                return False
+        else:
+            logger.warning("模型注册表未初始化，无法移除模型")
+            return False
 
     def _execute_param_change(self, proposal: Proposal) -> bool:
         """执行参数变更
@@ -585,6 +716,30 @@ class ModelRegistry:
             logger.info("模型已注册/更新: %s", model_name)
         return True
 
+    def remove_model(self, model_name: str) -> bool:
+        """移除已注册的模型
+
+        Args:
+            model_name: 要移除的模型名称
+
+        Returns:
+            移除是否成功
+
+        Raises:
+            ValueError: 尝试移除当前活跃模型时抛出
+        """
+        with self._lock:
+            if model_name not in self._models:
+                logger.error("模型不存在，无法移除: %s", model_name)
+                return False
+
+            if model_name == self._active_model:
+                raise ValueError(f"不能移除当前活跃模型: {model_name}，请先切换活跃模型")
+
+            del self._models[model_name]
+            logger.info("模型已移除: %s", model_name)
+        return True
+
     def can_network_run_model(self, model_name: str, total_resources: dict) -> bool:
         """检查网络是否有足够资源运行指定模型
 
@@ -666,7 +821,10 @@ class GovernanceManager:
         """
         self._blockchain_manager = blockchain_manager
         self._model_registry = ModelRegistry()
-        self._executor = ProposalExecutor(node_manager=node_manager)
+        self._executor = ProposalExecutor(
+            node_manager=node_manager,
+            model_registry=self._model_registry
+        )
 
         # 提案存储 {proposal_id: Proposal}
         self._proposals: Dict[int, Proposal] = {}
@@ -853,6 +1011,139 @@ class GovernanceManager:
             self._proposals[proposal_id] = proposal
 
         logger.info("模型运行提案已创建 #%d: %s (提案者: %s)",
+                     proposal_id, model_name, proposer)
+        return proposal_id
+
+    def create_add_model_proposal(self, proposer: str, model_name: str,
+                                   description: str, model_info: dict) -> int:
+        """创建新增模型提案
+
+        提议将新的AI模型注册到网络中。提案通过后，该模型将加入模型注册表，
+        可供后续的 RUN_MODEL 提案选择运行。
+
+        Args:
+            proposer: 提案发起者地址
+            model_name: 新模型名称（HuggingFace格式，如 "deepseek/DeepSeek-V3"）
+            description: 提案详细描述
+            model_info: 模型信息字典，需包含:
+                - min_memory_gb (float): 最小内存要求 (GB)
+                - min_gpu_memory_gb (float): 最小GPU显存要求 (GB)
+                - recommended_nodes (int): 推荐节点数
+                - category (str): 模型类别 (chat/image/code/embedding等)
+                - description (str): 模型描述
+
+        Returns:
+            提案ID，如果创建失败返回-1
+
+        示例:
+            >>> pid = gm.create_add_model_proposal(
+            ...     "0xABC...",
+            ...     "deepseek/DeepSeek-V3",
+            ...     "提议注册 DeepSeek-V3 模型，提供更高质量的中文对话能力",
+            ...     {
+            ...         "min_memory_gb": 240,
+            ...         "min_gpu_memory_gb": 80,
+            ...         "recommended_nodes": 4,
+            ...         "category": "chat",
+            ...         "description": "DeepSeek-V3 671B MoE 大型语言模型"
+            ...     }
+            ... )
+        """
+        # 校验模型名称格式
+        if not model_name or len(model_name) < 3:
+            logger.error("模型名称无效: %s", model_name)
+            return -1
+
+        # 校验模型是否已存在
+        if self._model_registry.get_model_info(model_name) is not None:
+            logger.error("模型已注册，无需重复添加: %s", model_name)
+            return -1
+
+        # 校验模型信息完整性
+        required_keys = {"min_memory_gb", "min_gpu_memory_gb",
+                         "recommended_nodes", "category"}
+        if not required_keys.issubset(model_info.keys()):
+            missing = required_keys - model_info.keys()
+            logger.error("模型信息缺少必要字段: %s", missing)
+            return -1
+
+        # 校验提案者代币
+        proposer_balance = self._get_balance(proposer)
+        if proposer_balance < MIN_PROPOSAL_STAKE:
+            logger.error("提案者余额不足: %d < %d (MIN_PROPOSAL_STAKE)",
+                         proposer_balance, MIN_PROPOSAL_STAKE)
+            return -1
+
+        with self._lock:
+            proposal_id = self._generate_proposal_id()
+            proposal = Proposal(
+                id=proposal_id,
+                proposer=proposer,
+                proposal_type=ProposalType.ADD_MODEL.value,
+                title=f"新增模型: {model_name}",
+                description=description,
+                model_name=model_name,
+                model_info=dict(model_info),
+            )
+            self._proposals[proposal_id] = proposal
+
+        logger.info("新增模型提案已创建 #%d: %s (提案者: %s)",
+                     proposal_id, model_name, proposer)
+        return proposal_id
+
+    def create_remove_model_proposal(self, proposer: str, model_name: str,
+                                      description: str) -> int:
+        """创建移除模型提案
+
+        提议从网络中移除指定的AI模型。提案通过后，该模型将从注册表中删除。
+        注意：当前活跃模型不能被移除。
+
+        Args:
+            proposer: 提案发起者地址
+            model_name: 要移除的模型名称
+            description: 提案详细描述（建议说明移除原因）
+
+        Returns:
+            提案ID，如果创建失败返回-1
+
+        示例:
+            >>> pid = gm.create_remove_model_proposal(
+            ...     "0xABC...",
+            ...     "Qwen/Qwen2.5-0.5B-Instruct",
+            ...     "该模型性能已落后，建议移除以减少维护负担"
+            ... )
+        """
+        # 校验模型是否存在
+        if self._model_registry.get_model_info(model_name) is None:
+            logger.error("模型不在注册表中，无法移除: %s", model_name)
+            return -1
+
+        # 校验是否为活跃模型（活跃模型不能直接移除）
+        if model_name == self._model_registry.get_active_model():
+            logger.error("不能移除当前活跃模型: %s，请先通过 RUN_MODEL 提案切换",
+                         model_name)
+            return -1
+
+        # 校验提案者代币
+        proposer_balance = self._get_balance(proposer)
+        if proposer_balance < MIN_PROPOSAL_STAKE:
+            logger.error("提案者余额不足: %d < %d (MIN_PROPOSAL_STAKE)",
+                         proposer_balance, MIN_PROPOSAL_STAKE)
+            return -1
+
+        with self._lock:
+            proposal_id = self._generate_proposal_id()
+            proposal = Proposal(
+                id=proposal_id,
+                proposer=proposer,
+                proposal_type=ProposalType.REMOVE_MODEL.value,
+                title=f"移除模型: {model_name}",
+                description=description,
+                model_name=model_name,
+            )
+            self._proposals[proposal_id] = proposal
+
+        logger.info("移除模型提案已创建 #%d: %s (提案者: %s)",
                      proposal_id, model_name, proposer)
         return proposal_id
 
