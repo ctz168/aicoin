@@ -1,0 +1,64 @@
+{
+  "node": {
+    "node_id": "",
+    "node_name": "aicoin-node",
+    "wallet_address": ""
+  },
+  "network": {
+    "host": "0.0.0.0",
+    "api_port": 8080,
+    "p2p_port": 5000,
+    "seeds": []
+  },
+  "blockchain": {
+    "mode": "simulation",
+    "web3_rpc_url": "",
+    "contract_address": "",
+    "chain_id": 1
+  },
+  "mining": {
+    "auto_mine": true,
+    "mining_interval": 60,
+    "proof_submission_enabled": true
+  },
+  "api_gateway": {
+    "enabled": true,
+    "tiers": {
+      "basic": {"price_per_1k_tokens": 10, "priority": 1},
+      "premium": {"price_per_1k_tokens": 50, "priority": 2},
+      "priority": {"price_per_1k_tokens": 100, "priority": 3}
+    },
+    "daily_burn_limit": 100000
+  },
+  "governance": {
+    "enabled": true,
+    "min_proposal_stake": 1000,
+    "voting_period_days": 7,
+    "quorum_percentage": 10.0,
+    "approval_threshold": 51.0
+  },
+  "routing": {
+    "strategy": "BALANCED",
+    "max_retries": 3,
+    "timeout": 30.0
+  },
+  "model": {
+    "name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "base_path": "./models"
+  },
+  "token_economics": {
+    "initial_block_reward": 50,
+    "halving_interval": 210000,
+    "max_supply": 21000000,
+    "node_reward_pct": 80.0,
+    "treasury_pct": 20.0
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "aicoin.log"
+  },
+  "persistence": {
+    "data_dir": "./data",
+    "state_file": "state.json"
+  }
+}

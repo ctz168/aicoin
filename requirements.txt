@@ -1,0 +1,11 @@
+# AICoin Core Dependencies
+torch>=2.0.0
+transformers>=4.36.0
+accelerate>=0.25.0
+psutil>=5.9.0
+sentencepiece>=0.1.99
+safetensors>=0.4.0
+aiohttp>=3.9.0
+web3>=6.15.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
