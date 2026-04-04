@@ -48,56 +48,71 @@ class PriorityTier(str, Enum):
     PRIORITY = "priority"
 
 
-# 每千 token 的 AICoin 燃烧费率 (单位: AIC, 10^8 为 1 AIC)
-BURN_RATES: Dict[str, int] = {
-    PriorityTier.BASIC.value: 1_000_000,      # 0.01 AIC / 1K tokens
-    PriorityTier.PREMIUM.value: 5_000_000,    # 0.05 AIC / 1K tokens
-    PriorityTier.PRIORITY.value: 10_000_000,  # 0.10 AIC / 1K tokens
+# 优先级倍率 (应用到模型基础价格上)
+# Basic × 1.0 | Premium × 2.0 | Priority × 3.0
+TIER_MULTIPLIERS: Dict[str, float] = {
+    PriorityTier.BASIC.value: 1.0,
+    PriorityTier.PREMIUM.value: 2.0,
+    PriorityTier.PRIORITY.value: 3.0,
 }
 
 # 支持的模型列表 (与 OpenAI 兼容的模型名映射)
+# 定价按模型参数量分级，输入/输出分离计费（单位: AIC, 10^8 = 1 AIC）
+# input_rate / output_rate 表示每 1K tokens 的最小单位数
 SUPPORTED_MODELS: Dict[str, Dict[str, Any]] = {
     "aicoin-llama-7b": {
         "display_name": "AICoin LLaMA 7B",
         "owner": "AICoin Network",
         "context_window": 4096,
         "max_output_tokens": 2048,
-        "pricing": {"input": "0.01 AIC/1K", "output": "0.01 AIC/1K"},
-    },
-    "aicoin-llama-13b": {
-        "display_name": "AICoin LLaMA 13B",
-        "owner": "AICoin Network",
-        "context_window": 4096,
-        "max_output_tokens": 4096,
-        "pricing": {"input": "0.02 AIC/1K", "output": "0.02 AIC/1K"},
-    },
-    "aicoin-llama-70b": {
-        "display_name": "AICoin LLaMA 70B",
-        "owner": "AICoin Network",
-        "context_window": 8192,
-        "max_output_tokens": 4096,
-        "pricing": {"input": "0.05 AIC/1K", "output": "0.05 AIC/1K"},
+        "input_rate": 100_000,       # 0.001 AIC / 1K input tokens
+        "output_rate": 300_000,      # 0.003 AIC / 1K output tokens
+        "pricing": {"input": "0.001 AIC/1K", "output": "0.003 AIC/1K"},
     },
     "aicoin-mistral-7b": {
         "display_name": "AICoin Mistral 7B",
         "owner": "AICoin Network",
         "context_window": 8192,
         "max_output_tokens": 4096,
-        "pricing": {"input": "0.01 AIC/1K", "output": "0.01 AIC/1K"},
+        "input_rate": 100_000,
+        "output_rate": 300_000,
+        "pricing": {"input": "0.001 AIC/1K", "output": "0.003 AIC/1K"},
     },
-    "aicoin-qwen-72b": {
-        "display_name": "AICoin Qwen 72B",
+    "aicoin-llama-13b": {
+        "display_name": "AICoin LLaMA 13B",
         "owner": "AICoin Network",
-        "context_window": 32768,
-        "max_output_tokens": 8192,
-        "pricing": {"input": "0.08 AIC/1K", "output": "0.08 AIC/1K"},
+        "context_window": 4096,
+        "max_output_tokens": 4096,
+        "input_rate": 200_000,       # 0.002 AIC / 1K input tokens
+        "output_rate": 500_000,      # 0.005 AIC / 1K output tokens
+        "pricing": {"input": "0.002 AIC/1K", "output": "0.005 AIC/1K"},
     },
     "aicoin-coder-34b": {
         "display_name": "AICoin Coder 34B",
         "owner": "AICoin Network",
         "context_window": 16384,
         "max_output_tokens": 4096,
-        "pricing": {"input": "0.04 AIC/1K", "output": "0.04 AIC/1K"},
+        "input_rate": 300_000,       # 0.003 AIC / 1K input tokens
+        "output_rate": 800_000,      # 0.008 AIC / 1K output tokens
+        "pricing": {"input": "0.003 AIC/1K", "output": "0.008 AIC/1K"},
+    },
+    "aicoin-llama-70b": {
+        "display_name": "AICoin LLaMA 70B",
+        "owner": "AICoin Network",
+        "context_window": 8192,
+        "max_output_tokens": 4096,
+        "input_rate": 500_000,       # 0.005 AIC / 1K input tokens
+        "output_rate": 1_200_000,    # 0.012 AIC / 1K output tokens
+        "pricing": {"input": "0.005 AIC/1K", "output": "0.012 AIC/1K"},
+    },
+    "aicoin-qwen-72b": {
+        "display_name": "AICoin Qwen 72B",
+        "owner": "AICoin Network",
+        "context_window": 32768,
+        "max_output_tokens": 8192,
+        "input_rate": 500_000,
+        "output_rate": 1_200_000,
+        "pricing": {"input": "0.005 AIC/1K", "output": "0.012 AIC/1K"},
     },
 }
 
@@ -1144,11 +1159,12 @@ class APIGateway:
 
             # Step 3: 确定优先级层级
             tier = headers.get("x-aicoin-tier", self._default_tier).strip().lower()
-            if tier not in BURN_RATES:
+            if tier not in TIER_MULTIPLIERS:
                 tier = self._default_tier
 
-            # Step 4: 估算 token 数量
-            estimated_tokens = self.estimate_tokens(cleaned_body)
+            # Step 4: 估算 token 数量（输入/输出分离）
+            input_tokens, output_tokens = self.estimate_tokens(cleaned_body)
+            estimated_tokens = input_tokens + output_tokens
 
             # Step 5: 速率限制检查
             rate_ok, rate_error = self._rate_limiter.check_rate_limit(
@@ -1162,8 +1178,8 @@ class APIGateway:
                     request_id=request_id,
                 )
 
-            # Step 6: 计算燃烧金额
-            burn_amount = self.calculate_burn_amount(estimated_tokens, tier)
+            # Step 6: 计算燃烧金额（输入/输出分离 + 模型分级 + 优先级倍率）
+            burn_amount = self.calculate_burn_amount(model, input_tokens, output_tokens, tier)
 
             # Step 7: 检查余额
             if not self._authenticator.check_balance(address, burn_amount):
@@ -1297,10 +1313,11 @@ class APIGateway:
 
             address = auth_result["address"]
             tier = headers.get("x-aicoin-tier", self._default_tier).strip().lower()
-            if tier not in BURN_RATES:
+            if tier not in TIER_MULTIPLIERS:
                 tier = self._default_tier
 
-            estimated_tokens = self.estimate_tokens(cleaned_body)
+            input_tokens, output_tokens = self.estimate_tokens(cleaned_body)
+            estimated_tokens = input_tokens + output_tokens
 
             # 速率限制
             rate_ok, rate_error = self._rate_limiter.check_rate_limit(address, tier, estimated_tokens)
@@ -1312,7 +1329,7 @@ class APIGateway:
                     request_id=request_id,
                 )
 
-            burn_amount = self.calculate_burn_amount(estimated_tokens, tier)
+            burn_amount = self.calculate_burn_amount(model, input_tokens, output_tokens, tier)
 
             if not self._authenticator.check_balance(address, burn_amount):
                 return self._make_error_response(
@@ -1472,11 +1489,11 @@ class APIGateway:
             }
         """
         tiers = {}
-        for tier_name, rate_raw in BURN_RATES.items():
+        for tier_name, multiplier in TIER_MULTIPLIERS.items():
             tiers[tier_name] = {
-                "rate_per_1k_tokens": rate_raw / 1e8,
-                "rate_per_1k_tokens_raw": rate_raw,
+                "multiplier": multiplier,
                 "rate_limits": DEFAULT_RATE_LIMITS.get(tier_name, {}),
+                "description": f"模型基础价格 × {multiplier}x 倍率",
             }
 
         models = {}
@@ -1484,6 +1501,8 @@ class APIGateway:
             models[model_id] = {
                 "display_name": model_info.get("display_name", model_id),
                 "pricing": model_info.get("pricing", {}),
+                "input_rate_raw": model_info.get("input_rate", 0),
+                "output_rate_raw": model_info.get("output_rate", 0),
                 "context_window": model_info.get("context_window", 4096),
                 "max_output_tokens": model_info.get("max_output_tokens", 2048),
             }
@@ -1689,47 +1708,61 @@ class APIGateway:
     # 计费
     # ================================================================
 
-    def calculate_burn_amount(self, estimated_tokens: int, tier: str) -> int:
-        """计算需要燃烧的 AICoin 数量
+    def calculate_burn_amount(
+        self, model: str, input_tokens: int, output_tokens: int, tier: str
+    ) -> int:
+        """计算需要燃烧的 AICoin 数量（输入/输出分离 + 模型分级 + 优先级倍率）
 
-        费率:
-        - basic:   0.01 AIC / 1K tokens (1,000,000 最小单位)
-        - premium: 0.05 AIC / 1K tokens (5,000,000 最小单位)
-        - priority: 0.10 AIC / 1K tokens (10,000,000 最小单位)
-
-        计算公式: burn_amount = ceil(estimated_tokens / 1000) * rate_per_1k
+        计算公式:
+            input_cost = ceil(input_tokens / 1000) * model.input_rate * tier_multiplier
+            output_cost = ceil(output_tokens / 1000) * model.output_rate * tier_multiplier
+            total = input_cost + output_cost
 
         Args:
-            estimated_tokens: 预估的 token 数量
-            tier: 优先级层级
+            model: 模型名称
+            input_tokens: 预估的输入 token 数量
+            output_tokens: 预估的输出 token 数量
+            tier: 优先级层级 (basic/premium/priority)
 
         Returns:
             需要燃烧的 AICoin 数量 (最小单位, 10^8 = 1 AIC)
         """
-        if tier not in BURN_RATES:
-            tier = PriorityTier.BASIC.value
+        # 获取模型定价
+        model_info = SUPPORTED_MODELS.get(model)
+        if model_info is None:
+            # 未知模型使用默认小模型定价
+            input_rate = 100_000   # 0.001 AIC / 1K
+            output_rate = 300_000  # 0.003 AIC / 1K
+        else:
+            input_rate = model_info.get("input_rate", 100_000)
+            output_rate = model_info.get("output_rate", 300_000)
 
-        rate_per_1k = BURN_RATES[tier]
+        # 获取优先级倍率
+        multiplier = TIER_MULTIPLIERS.get(tier, 1.0)
+
         # 向上取整到 1K token 的倍数
-        thousands = (estimated_tokens + 999) // 1000
-        burn_amount = thousands * rate_per_1k
+        input_1k = (input_tokens + 999) // 1000
+        output_1k = (output_tokens + 999) // 1000
 
-        # 最低消费 1 个 token 的费率
-        burn_amount = max(burn_amount, 1)
+        input_cost = int(input_1k * input_rate * multiplier)
+        output_cost = int(output_1k * output_rate * multiplier)
 
-        return burn_amount
+        total = input_cost + output_cost
 
-    def estimate_tokens(self, request: dict) -> int:
-        """估算请求的 token 数量
+        # 最低消费 1 个最小单位
+        return max(total, 1)
 
-        基于消息/提示长度 + max_tokens 参数进行估算。
+    def estimate_tokens(self, request: dict) -> Tuple[int, int]:
+        """估算请求的输入和输出 token 数量（分别返回）
+
+        基于消息/提示长度估算输入，基于 max_tokens 参数估算输出。
         使用简化的经验公式: ~4 字符 = 1 token
 
         Args:
             request: 请求数据 (chat 或 completions 格式)
 
         Returns:
-            预估的总 token 数量
+            (input_tokens, output_tokens) 元组
         """
         input_tokens = 0
 
@@ -1758,7 +1791,7 @@ class APIGateway:
                 if isinstance(p, str):
                     input_tokens += len(p) // 4
 
-        # 加上 max_tokens
+        # 估算输出 token 数
         max_tokens = request.get("max_tokens")
         if max_tokens is not None and isinstance(max_tokens, (int, float)):
             output_tokens = int(max_tokens)
@@ -1766,10 +1799,11 @@ class APIGateway:
             # 默认输出 token 数
             output_tokens = 1024
 
-        total = input_tokens + output_tokens
+        # 最低保底
+        input_tokens = max(input_tokens, 10)
+        output_tokens = max(output_tokens, 10)
 
-        # 最低 100 tokens
-        return max(total, 100)
+        return input_tokens, output_tokens
 
     # ================================================================
     # HTTP 服务器

@@ -572,11 +572,26 @@ gm.create_param_proposal(
 
 ### API 调用定价
 
-| 档位 | 价格 | 优先级 | 适用场景 |
-|------|------|--------|---------|
-| **Basic** | 0.01 AIC / 1K tokens | 标准 | 日常开发测试 |
-| **Premium** | 0.05 AIC / 1K tokens | 高 | 生产环境应用 |
-| **Priority** | 0.10 AIC / 1K tokens | 最高 | 低延迟关键任务 |
+#### 模型分级定价（输入/输出分离计费）
+
+| 模型 | 参数量 | 输入价格 | 输出价格 |
+|------|--------|---------|---------|
+| **aicoin-llama-7b** | 7B | 0.001 AIC / 1K | 0.003 AIC / 1K |
+| **aicoin-mistral-7b** | 7B | 0.001 AIC / 1K | 0.003 AIC / 1K |
+| **aicoin-llama-13b** | 13B | 0.002 AIC / 1K | 0.005 AIC / 1K |
+| **aicoin-coder-34b** | 34B | 0.003 AIC / 1K | 0.008 AIC / 1K |
+| **aicoin-llama-70b** | 70B | 0.005 AIC / 1K | 0.012 AIC / 1K |
+| **aicoin-qwen-72b** | 72B | 0.005 AIC / 1K | 0.012 AIC / 1K |
+
+#### 优先级倍率
+
+| 档位 | 倍率 | 速率限制 | 适用场景 |
+|------|------|---------|---------|
+| **Basic** | × 1.0 | 10 RPM, 50K TPM | 日常开发测试 |
+| **Premium** | × 2.0 | 60 RPM, 200K TPM | 生产环境应用 |
+| **Priority** | × 3.0 | 120 RPM, 500K TPM | 低延迟关键任务 |
+
+> 💡 定价远低于 OpenAI（GPT-4o: $2.50/$10.00 per 1M）和 Together AI（Llama 70B: $0.35/$0.40 per 1M）。详细竞品对比见 [docs/PRICING_ANALYSIS.md](docs/PRICING_ANALYSIS.md)。
 
 ### 减半时间线
 

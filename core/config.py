@@ -167,9 +167,9 @@ class AICoinConfig:
     # === API 网关 ===
     api_enabled: bool = True
     api_tiers: dict = field(default_factory=lambda: {
-        "basic": {"price_per_1k_tokens": 10, "priority": 1},    # 0.01 AIC (wei=10)
-        "premium": {"price_per_1k_tokens": 50, "priority": 2},   # 0.05 AIC
-        "priority": {"price_per_1k_tokens": 100, "priority": 3},  # 0.10 AIC
+        "basic": {"price_per_1k_tokens_input": 1, "price_per_1k_tokens_output": 3, "priority": 1},   # 0.001/0.003 AIC
+        "premium": {"price_per_1k_tokens_input": 2, "price_per_1k_tokens_output": 6, "priority": 2},   # × 2.0
+        "priority": {"price_per_1k_tokens_input": 3, "price_per_1k_tokens_output": 9, "priority": 3},  # × 3.0
     })
     daily_burn_limit: int = 100000  # 每地址每日最大消耗 AIC
 
