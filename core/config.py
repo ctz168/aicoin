@@ -208,6 +208,18 @@ class AICoinConfig:
     data_dir: str = "./data"
     state_file: str = "state.json"
 
+    # === 混合推理 ===
+    hybrid_inference_enabled: bool = True
+    hybrid_routing_strategy: str = "HYBRID"  # BALANCED / HYBRID
+    cb_failure_threshold: int = 5            # 熔断器: 连续失败阈值
+    cb_recovery_timeout: float = 30.0        # 熔断器: 恢复时间(秒)
+    cb_half_open_max_calls: int = 3          # 熔断器: 半开试探次数
+    cb_success_threshold: int = 2            # 熔断器: 恢复所需成功次数
+    affinity_strategy: str = "weak"          # 会话亲和性: strong/weak/none
+    affinity_ttl: float = 600.0              # 会话亲和性 TTL (秒)
+    cluster_gc_interval: float = 60.0        # 集群回收检查间隔(秒)
+    cluster_max_idle_seconds: float = 300.0  # 集群最大空闲时间(秒)
+
     # ==================== 生命周期方法 ====================
 
     def __post_init__(self) -> None:
@@ -248,7 +260,7 @@ class AICoinConfig:
 
         # 路由策略校验
         valid_strategies = (
-            "LATENCY_FIRST", "CAPABILITY_FIRST", "COST_FIRST", "BALANCED"
+            "LATENCY_FIRST", "CAPABILITY_FIRST", "COST_FIRST", "BALANCED", "HYBRID"
         )
         if self.routing_strategy not in valid_strategies:
             raise ValueError(

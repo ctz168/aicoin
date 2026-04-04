@@ -48,6 +48,7 @@ class RoutingStrategy(Enum):
     COST_FIRST = "cost_first"             # 费用优先
     BALANCED = "balanced"                 # 均衡模式（默认）
     AVAILABILITY_FIRST = "availability_first"  # 可用性优先
+    HYBRID = "hybrid"                     # 混合模式 (自动选择 STANDALONE/并行)
 
 
 class NodeStatus(Enum):
@@ -140,6 +141,11 @@ class NodeProfile:
     total_failures: int = 0               # 历史总失败次数
     registered_at: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # 混合推理扩展字段
+    vram_total_gb: float = 0.0              # GPU 显存总量 (GB)
+    vram_available_gb: float = 0.0          # 可用显存 (GB)
+    hybrid_mode: str = ""                   # 支持的推理模式
 
     # ---- 便捷属性 ----
     @property
@@ -1299,6 +1305,236 @@ class OptimalRouter:
         self._probe.stop_background_probe()
         self._registry.stop_background_cleanup()
         logger.info("最优路由引擎已关闭")
+
+    # ------------------------------------------------------------------
+    # 混合推理路由
+    # ------------------------------------------------------------------
+
+    @property
+    def _hybrid_scheduler(self):  # type: ignore
+        """
+        懒加载 HybridScheduler 实例，避免循环导入。
+
+        延迟导入 core.hybrid_inference 模块并缓存实例，
+        仅在首次调用 route_hybrid / get_hybrid_stats 时创建。
+        """
+        if not hasattr(self, "_hybrid_scheduler_instance") or self._hybrid_scheduler_instance is None:
+            from aicoin.core.hybrid_inference import HybridScheduler  # lazy import
+            self._hybrid_scheduler_instance = HybridScheduler()
+            logger.info("HybridScheduler 懒加载完成")
+        return self._hybrid_scheduler_instance
+
+    def route_hybrid(
+        self,
+        model_name: str,
+        request_data: dict,
+        session_key: Optional[str] = None,
+        priority: str = "basic",
+    ) -> Dict[str, Any]:
+        """
+        混合推理路由 — 根据模型大小自动选择推理策略
+
+        小模型(≤15B): 单节点推理 + 热备冗余
+        中模型(16-40B): 张量并行 + 热备冗余
+        大模型(>40B): 张量/流水线并行 + 热备冗余
+
+        通过 HybridScheduler 统一调度:
+        - 模型分级 → 自动确定推理模式
+        - 冗余策略 → 适度冗余保障稳定性
+        - 熔断保护 → 故障节点自动隔离
+        - 会话亲和性 → 多轮对话保持一致性
+
+        Args:
+            model_name: 模型名称
+            request_data: 请求数据
+            session_key: 会话标识 (用于多轮对话)
+            priority: 优先级 (basic/premium/priority)
+
+        Returns:
+            {
+                "success": bool,
+                "routing_mode": "hybrid",
+                "cluster_id": str,
+                "inference_mode": str,
+                "node_id": str,
+                "response": Any,
+                "tried_nodes": [...],
+                "redundancy_policy": {...},
+                "total_latency_ms": float,
+            }
+        """
+        start_time = time.monotonic()
+        scheduler = self._hybrid_scheduler
+
+        # ------------------------------------------------------------------
+        # 1. 收集可用节点并转换为 HybridScheduler 期望的 dict 格式
+        # ------------------------------------------------------------------
+        alive_nodes = self._registry.get_nodes_by_model(model_name)
+
+        # 进一步过滤掉 DRAINING / UNHEALTHY 的节点
+        usable_nodes = [
+            n for n in alive_nodes
+            if n.status not in (NodeStatus.DRAINING, NodeStatus.UNHEALTHY)
+        ]
+
+        if not usable_nodes:
+            logger.warning(
+                "route_hybrid: 没有可用节点运行模型 %s", model_name,
+            )
+            return {
+                "success": False,
+                "routing_mode": "hybrid",
+                "cluster_id": None,
+                "inference_mode": None,
+                "node_id": None,
+                "response": None,
+                "tried_nodes": [],
+                "redundancy_policy": {},
+                "total_latency_ms": round((time.monotonic() - start_time) * 1000.0, 2),
+                "error": f"没有可用节点运行模型 {model_name}",
+            }
+
+        available_nodes: List[Dict[str, Any]] = []
+        for node in usable_nodes:
+            node_dict: Dict[str, Any] = {
+                "id": node.id,
+                "vram_gb": node.vram_available_gb,
+                "load": node.current_load,
+                "latency_ms": self._probe.get_latency(node.id),
+                "compute_score": node.compute_score,
+                "host": node.host,
+                "port": node.port,
+                "status": node.status.value,
+                "concurrent_requests": node.concurrent_requests,
+                "success_rate": node.success_rate,
+                "gpu_info": node.gpu_info,
+                "geographic_region": node.geographic_region,
+            }
+            available_nodes.append(node_dict)
+
+        # ------------------------------------------------------------------
+        # 2. 构造 execute_callback 桥接函数
+        #    HybridScheduler 期望签名: callback(node_id, cluster, data) -> dict
+        #    内部 _execute_callback 签名:  callback(node_id, request_data) -> dict
+        # ------------------------------------------------------------------
+        def _hybrid_execute_callback(
+            node_id: str,
+            cluster: Any,
+            data: dict,
+        ) -> dict:
+            """桥接 HybridScheduler 回调签名与内部 _execute_callback"""
+            if self._execute_callback is not None:
+                result = self._execute_callback(node_id, data)
+                # 支持异步回调
+                if asyncio.iscoroutine(result):
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            result = pool.submit(asyncio.run, result).result(
+                                timeout=self._config.request_timeout_seconds
+                            )
+                    else:
+                        result = loop.run_until_complete(result)
+                return result
+            # 无回调时模拟成功（用于测试）
+            return {"success": True, "response": {"simulated": True, "hybrid": True}}
+
+        # ------------------------------------------------------------------
+        # 3. 调用 HybridScheduler.schedule()
+        # ------------------------------------------------------------------
+        logger.info(
+            "route_hybrid: 模型=%s, 可用节点=%d, 会话=%s, 优先级=%s",
+            model_name, len(available_nodes),
+            session_key or "无", priority,
+        )
+
+        result = scheduler.schedule(
+            model_name=model_name,
+            available_nodes=available_nodes,
+            session_key=session_key,
+            execute_callback=_hybrid_execute_callback,
+            request_data=request_data,
+            priority=priority,
+        )
+
+        # ------------------------------------------------------------------
+        # 4. 更新路由统计
+        # ------------------------------------------------------------------
+        total_latency = (time.monotonic() - start_time) * 1000.0
+        success = result.get("success", False)
+
+        if success:
+            node_id = result.get("node_id")
+            if node_id:
+                self._registry.update_node_stats(node_id, success=True)
+            with self._lock:
+                self._total_requests += 1
+                self._total_success += 1
+                self._total_latency += total_latency
+                if node_id:
+                    self._node_request_counts[node_id] = (
+                        self._node_request_counts.get(node_id, 0) + 1
+                    )
+                self._recent_latencies.append(total_latency)
+                if len(self._recent_latencies) > 1000:
+                    self._recent_latencies = self._recent_latencies[-500:]
+        else:
+            with self._lock:
+                self._total_requests += 1
+                self._total_failures += 1
+            # 更新失败节点统计
+            for tried in result.get("tried_nodes", []):
+                if not tried.get("success", True):
+                    nid = tried.get("node_id")
+                    if nid:
+                        self._registry.update_node_stats(nid, success=False)
+
+        # ------------------------------------------------------------------
+        # 5. 组装冗余策略信息
+        # ------------------------------------------------------------------
+        redundancy_policy: Dict[str, Any] = {
+            "cluster_id": result.get("cluster_id"),
+            "inference_mode": result.get("mode"),
+            "tensor_parallel_size": result.get("tensor_parallel_size", 1),
+            "pipeline_parallel_size": result.get("pipeline_parallel_size", 1),
+        }
+
+        logger.info(
+            "route_hybrid 完成: 模型=%s, 成功=%s, 模式=%s, 耗时=%.1fms",
+            model_name, success, result.get("mode"), total_latency,
+        )
+
+        return {
+            "success": success,
+            "routing_mode": "hybrid",
+            "cluster_id": result.get("cluster_id"),
+            "inference_mode": result.get("mode"),
+            "node_id": result.get("node_id"),
+            "response": result.get("response"),
+            "tried_nodes": result.get("tried_nodes", []),
+            "redundancy_policy": redundancy_policy,
+            "total_latency_ms": round(total_latency, 2),
+            "error": result.get("error"),
+        }
+
+    def get_hybrid_stats(self) -> Dict[str, Any]:
+        """
+        获取 HybridScheduler 统计信息
+
+        Returns:
+            {
+                "total_scheduled": int,
+                "total_success": int,
+                "total_fallbacks": int,
+                "success_rate": float,
+                "circuit_breaker": {...},
+                "session_affinity": {...},
+                "cluster_manager": {...},
+                "config": {...},
+            }
+        """
+        return self._hybrid_scheduler.get_stats()
 
 
 # ---------------------------------------------------------------------------

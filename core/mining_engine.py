@@ -1158,6 +1158,97 @@ class MiningEngine:
         }
 
     # ----------------------------------------------------------------
+    #  混合推理奖励分配
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def calculate_cluster_reward(
+        total_reward: int,
+        node_contributions: Dict[str, float],
+        mode: str = "standalone",
+    ) -> Dict[str, int]:
+        """
+        计算集群内各节点的奖励分配
+
+        混合推理模式下，多个节点协作完成一次推理，奖励需合理分配:
+        - STANDALONE: 全部归一个节点
+        - TENSOR_PARALLEL: 按权重分片比例分配 (GPU显存贡献)
+        - PIPELINE_PARALLEL: Leader 获得 30% 协调费，其余按层分配
+        - HYBRID: Leader 30% 协调费 + 按权重分片分配剩余
+
+        Args:
+            total_reward: 总奖励金额 (AIC, 最小单位)
+            node_contributions: {node_id: contribution_score}
+                - STANDALONE: {node_id: 1.0}
+                - TENSOR_PARALLEL: {node_id: vram_assigned_gb / total_weight_gb}
+                - PIPELINE_PARALLEL: {node_id: layers_assigned / total_layers}
+            mode: 推理模式
+
+        Returns:
+            {node_id: reward_amount} 各节点的奖励分配
+        """
+        if not node_contributions:
+            return {}
+
+        # STANDALONE: 全部归一个节点
+        if mode == "standalone":
+            node_id = list(node_contributions.keys())[0]
+            return {node_id: total_reward}
+
+        # 计算各节点的贡献比例
+        total_contribution = sum(node_contributions.values())
+        if total_contribution <= 0:
+            # 均分
+            per_node = total_reward // len(node_contributions)
+            return {nid: per_node for nid in node_contributions}
+
+        # Leader 额外获得协调奖励
+        leader_id = min(node_contributions.keys())  # rank 0 = leader
+        leader_bonus_ratio = 0.05  # Leader 额外 5% 协调费
+        pool_reward = total_reward
+
+        if mode in ("tensor_parallel", "hybrid_parallel"):
+            # Leader 获得协调费
+            leader_bonus = int(pool_reward * leader_bonus_ratio)
+            pool_reward -= leader_bonus
+        elif mode == "pipeline_parallel":
+            # Pipeline 的 Leader 协调费更高 (30%)
+            leader_bonus_ratio = 0.30
+            leader_bonus = int(pool_reward * leader_bonus_ratio)
+            pool_reward -= leader_bonus
+        else:
+            leader_bonus = 0
+
+        # 按贡献比例分配
+        rewards: Dict[str, int] = {}
+        remaining = pool_reward
+
+        node_ids = list(node_contributions.keys())
+        for i, node_id in enumerate(node_ids):
+            if node_id == leader_id:
+                rewards[node_id] = 0  # 稍后加上 bonus
+
+            contribution = node_contributions[node_id]
+            ratio = contribution / total_contribution
+            node_reward = int(pool_reward * ratio)
+            rewards[node_id] = node_reward
+            remaining -= node_reward
+
+        # 加上 Leader bonus + 尾差
+        if leader_id in rewards:
+            rewards[leader_id] += leader_bonus + remaining
+
+        logger.debug(
+            "[MiningEngine] 集群奖励分配: 模式=%s, 总额=%d AIC, "
+            "Leader=%s(%d), 详情=%s",
+            mode, total_reward,
+            leader_id, rewards.get(leader_id, 0),
+            {nid: r for nid, r in rewards.items() if nid != leader_id},
+        )
+
+        return rewards
+
+    # ----------------------------------------------------------------
     #  网络统计
     # ----------------------------------------------------------------
 
