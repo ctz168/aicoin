@@ -166,10 +166,12 @@ class AICoinConfig:
 
     # === API 网关 ===
     api_enabled: bool = True
+    # v2 上线初期优惠定价 (闲置算力 9 折已包含)
+    # 单位: 最小单位 (10^8 = 1 AIC), 乘以优先级倍率后为实际价格
     api_tiers: dict = field(default_factory=lambda: {
-        "basic": {"price_per_1k_tokens_input": 1, "price_per_1k_tokens_output": 3, "priority": 1},   # 0.001/0.003 AIC
-        "premium": {"price_per_1k_tokens_input": 2, "price_per_1k_tokens_output": 6, "priority": 2},   # × 2.0
-        "priority": {"price_per_1k_tokens_input": 3, "price_per_1k_tokens_output": 9, "priority": 3},  # × 3.0
+        "basic": {"price_per_1k_tokens_input": 1, "price_per_1k_tokens_output": 3, "priority": 1},   # ×1.0 (基准价)
+        "premium": {"price_per_1k_tokens_input": 2, "price_per_1k_tokens_output": 6, "priority": 2},   # ×2.0
+        "priority": {"price_per_1k_tokens_input": 3, "price_per_1k_tokens_output": 9, "priority": 3},  # ×3.0
     })
     daily_burn_limit: int = 100000  # 每地址每日最大消耗 AIC
 
@@ -305,17 +307,27 @@ class AICoinConfig:
                 raise ValueError(
                     f"api_tiers[{tier_name}] 必须是字典类型"
                 )
-            if "price_per_1k_tokens" not in tier_config:
-                raise ValueError(
-                    f"api_tiers[{tier_name}] 缺少 'price_per_1k_tokens' 字段"
-                )
             if "priority" not in tier_config:
                 raise ValueError(
                     f"api_tiers[{tier_name}] 缺少 'priority' 字段"
                 )
-            if tier_config["price_per_1k_tokens"] < 0:
+            input_key = "price_per_1k_tokens_input"
+            output_key = "price_per_1k_tokens_output"
+            if input_key not in tier_config:
                 raise ValueError(
-                    f"api_tiers[{tier_name}].price_per_1k_tokens 不能为负数"
+                    f"api_tiers[{tier_name}] 缺少 '{input_key}' 字段"
+                )
+            if output_key not in tier_config:
+                raise ValueError(
+                    f"api_tiers[{tier_name}] 缺少 '{output_key}' 字段"
+                )
+            if tier_config[input_key] < 0:
+                raise ValueError(
+                    f"api_tiers[{tier_name}].{input_key} 不能为负数"
+                )
+            if tier_config[output_key] < 0:
+                raise ValueError(
+                    f"api_tiers[{tier_name}].{output_key} 不能为负数"
                 )
 
     # ==================== 序列化方法 ====================

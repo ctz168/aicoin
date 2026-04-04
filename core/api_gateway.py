@@ -57,62 +57,75 @@ TIER_MULTIPLIERS: Dict[str, float] = {
 }
 
 # 支持的模型列表 (与 OpenAI 兼容的模型名映射)
-# 定价按模型参数量分级，输入/输出分离计费（单位: AIC, 10^8 = 1 AIC）
-# input_rate / output_rate 表示每 1K tokens 的最小单位数
+# =============================================================
+# 定价策略 (v2 - 上线初期优惠定价):
+#   - 基于同行最低价 (DeepInfra) 下调 60%+
+#   - 闲置算力额外打 9 折 (已包含在下方定价中)
+#   - 单位: AIC 最小单位 (10^8 = 1 AIC), 输入/输出分离计费
+#   - 模型分级: Tiny(≤8B) < Small(9-15B) < Medium(16-40B) < Large(>40B)
+#
+# 同行参考 (DeepInfra, per 1K tokens):
+#   Llama 8B:  $0.00002 / $0.00005  →  AICoin: 0.0004 / 0.0012 AIC
+#   Llama 70B: $0.00010 / $0.00032  →  AICoin: 0.0018 / 0.0045 AIC
+# =============================================================
 SUPPORTED_MODELS: Dict[str, Dict[str, Any]] = {
+    # ---- Tiny 级 (≤8B params) ----
     "aicoin-llama-7b": {
         "display_name": "AICoin LLaMA 7B",
         "owner": "AICoin Network",
         "context_window": 4096,
         "max_output_tokens": 2048,
-        "input_rate": 100_000,       # 0.001 AIC / 1K input tokens
-        "output_rate": 300_000,      # 0.003 AIC / 1K output tokens
-        "pricing": {"input": "0.001 AIC/1K", "output": "0.003 AIC/1K"},
+        "input_rate": 40_000,        # 0.0004 AIC / 1K input tokens
+        "output_rate": 120_000,       # 0.0012 AIC / 1K output tokens
+        "pricing": {"input": "0.0004 AIC/1K", "output": "0.0012 AIC/1K"},
     },
     "aicoin-mistral-7b": {
         "display_name": "AICoin Mistral 7B",
         "owner": "AICoin Network",
         "context_window": 8192,
         "max_output_tokens": 4096,
-        "input_rate": 100_000,
-        "output_rate": 300_000,
-        "pricing": {"input": "0.001 AIC/1K", "output": "0.003 AIC/1K"},
+        "input_rate": 40_000,
+        "output_rate": 120_000,
+        "pricing": {"input": "0.0004 AIC/1K", "output": "0.0012 AIC/1K"},
     },
+    # ---- Small 级 (9-15B params) ----
     "aicoin-llama-13b": {
         "display_name": "AICoin LLaMA 13B",
         "owner": "AICoin Network",
         "context_window": 4096,
         "max_output_tokens": 4096,
-        "input_rate": 200_000,       # 0.002 AIC / 1K input tokens
-        "output_rate": 500_000,      # 0.005 AIC / 1K output tokens
-        "pricing": {"input": "0.002 AIC/1K", "output": "0.005 AIC/1K"},
+        "input_rate": 70_000,        # 0.0007 AIC / 1K input tokens
+        "output_rate": 180_000,       # 0.0018 AIC / 1K output tokens
+        "pricing": {"input": "0.0007 AIC/1K", "output": "0.0018 AIC/1K"},
     },
+    # ---- Medium 级 (16-40B params) ----
     "aicoin-coder-34b": {
         "display_name": "AICoin Coder 34B",
         "owner": "AICoin Network",
         "context_window": 16384,
         "max_output_tokens": 4096,
-        "input_rate": 300_000,       # 0.003 AIC / 1K input tokens
-        "output_rate": 800_000,      # 0.008 AIC / 1K output tokens
-        "pricing": {"input": "0.003 AIC/1K", "output": "0.008 AIC/1K"},
+        "input_rate": 120_000,       # 0.0012 AIC / 1K input tokens
+        "output_rate": 320_000,       # 0.0032 AIC / 1K output tokens
+        "pricing": {"input": "0.0012 AIC/1K", "output": "0.0032 AIC/1K"},
     },
+    # ---- Large 级 (>40B params) ----
     "aicoin-llama-70b": {
         "display_name": "AICoin LLaMA 70B",
         "owner": "AICoin Network",
         "context_window": 8192,
         "max_output_tokens": 4096,
-        "input_rate": 500_000,       # 0.005 AIC / 1K input tokens
-        "output_rate": 1_200_000,    # 0.012 AIC / 1K output tokens
-        "pricing": {"input": "0.005 AIC/1K", "output": "0.012 AIC/1K"},
+        "input_rate": 180_000,       # 0.0018 AIC / 1K input tokens
+        "output_rate": 450_000,       # 0.0045 AIC / 1K output tokens
+        "pricing": {"input": "0.0018 AIC/1K", "output": "0.0045 AIC/1K"},
     },
     "aicoin-qwen-72b": {
         "display_name": "AICoin Qwen 72B",
         "owner": "AICoin Network",
         "context_window": 32768,
         "max_output_tokens": 8192,
-        "input_rate": 500_000,
-        "output_rate": 1_200_000,
-        "pricing": {"input": "0.005 AIC/1K", "output": "0.012 AIC/1K"},
+        "input_rate": 180_000,
+        "output_rate": 450_000,
+        "pricing": {"input": "0.0018 AIC/1K", "output": "0.0045 AIC/1K"},
     },
 }
 
@@ -1730,12 +1743,12 @@ class APIGateway:
         # 获取模型定价
         model_info = SUPPORTED_MODELS.get(model)
         if model_info is None:
-            # 未知模型使用默认小模型定价
-            input_rate = 100_000   # 0.001 AIC / 1K
-            output_rate = 300_000  # 0.003 AIC / 1K
+            # 未知模型使用默认 Tiny 级定价 (v2 上线优惠价)
+            input_rate = 40_000    # 0.0004 AIC / 1K
+            output_rate = 120_000  # 0.0012 AIC / 1K
         else:
-            input_rate = model_info.get("input_rate", 100_000)
-            output_rate = model_info.get("output_rate", 300_000)
+            input_rate = model_info.get("input_rate", 40_000)
+            output_rate = model_info.get("output_rate", 120_000)
 
         # 获取优先级倍率
         multiplier = TIER_MULTIPLIERS.get(tier, 1.0)
